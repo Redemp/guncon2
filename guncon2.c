@@ -163,8 +163,8 @@ static void guncon2_usb_irq(struct urb *urb) {
         input_report_key(guncon2->input_device, BTN_LEFT, buttons & GUNCON2_TRIGGER);
         input_report_key(guncon2->input_device, BTN_RIGHT, buttons & GUNCON2_BTN_A );
         input_report_key(guncon2->input_device, BTN_MIDDLE, buttons & GUNCON2_BTN_B);
-        input_report_key(guncon2->input_device, BTN_SIDE, buttons & GUNCON2_BTN_C);
-	input_report_key(guncon2->input_device, KEY_1, buttons & GUNCON2_BTN_START);
+        input_report_key(guncon2->input_device, BTN_C, buttons & GUNCON2_BTN_C);
+	    input_report_key(guncon2->input_device, KEY_1, buttons & GUNCON2_BTN_START);
         input_report_key(guncon2->input_device, KEY_5, buttons & GUNCON2_BTN_SELECT);
 
         x_min = input_abs_get_min(guncon2->input_device, ABS_RX);	
