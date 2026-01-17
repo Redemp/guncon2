@@ -37,7 +37,6 @@
 #define Y_MIN 20
 #define Y_MAX 240
 
-
 // normalized values to report
 #define XN_MIN -32768
 #define XN_MAX 32767
@@ -45,9 +44,6 @@
 #define YN_MAX 32767
 #define OFFSCREEN -65536 
 #define CENTER 32768
-
-#define OFFSCREEN_HYST_FRAMES 8
-#define CENTER_DECAY_SHIFT 2  /* after hysteresis, move 1/(2^shift) toward center each report */
 
 
 struct guncon2 {
@@ -58,12 +54,6 @@ struct guncon2 {
     bool is_open;
     char phys[64];
     bool is_recalibrate;
-    u16 last_x;
-    u16 last_y;
-    bool have_last_pos;
-    u8 invalid_frames;
-    int last_report_x;
-    int last_report_y;
 };
 
 struct gc_mode {
@@ -79,8 +69,6 @@ static void guncon2_usb_irq(struct urb *urb) {
     unsigned char *data = urb->transfer_buffer;
     int error, buttons;
     unsigned short x, y;
-    unsigned short aim_x, aim_y;
-    bool invalid_coords = false;
     signed char hat_x = 0;
     signed char hat_y = 0;    
     unsigned short x_min, x_max, y_min, y_max;     
@@ -163,8 +151,8 @@ static void guncon2_usb_irq(struct urb *urb) {
         input_report_key(guncon2->input_device, BTN_LEFT, buttons & GUNCON2_TRIGGER);
         input_report_key(guncon2->input_device, BTN_RIGHT, buttons & GUNCON2_BTN_A );
         input_report_key(guncon2->input_device, BTN_MIDDLE, buttons & GUNCON2_BTN_B);
-        input_report_key(guncon2->input_device, BTN_C, buttons & GUNCON2_BTN_C);
-	    input_report_key(guncon2->input_device, KEY_1, buttons & GUNCON2_BTN_START);
+        input_report_key(guncon2->input_device, BTN_SIDE, buttons & GUNCON2_BTN_C);
+	input_report_key(guncon2->input_device, KEY_1, buttons & GUNCON2_BTN_START);
         input_report_key(guncon2->input_device, KEY_5, buttons & GUNCON2_BTN_SELECT);
 
         x_min = input_abs_get_min(guncon2->input_device, ABS_RX);	
@@ -197,78 +185,38 @@ static void guncon2_usb_irq(struct urb *urb) {
         // end micro calibration
 
         /*
-         * Improved tracking: filter special GunCon 2 protocol codes (no-light/busy)
-         * and out-of-range coordinates; keep last known good position.
+         * Filter special GunCon2 protocol codes that can appear when
+         * the gun is offscreen or tracking is lost.
+         *
+         * These would otherwise map to random on-screen coordinates and
+         * can break offscreen reload behavior in Batocera.
          */
+        bool invalid_special = false;
         if (x == 1 && (y == 5 || y == 10))
-            invalid_coords = true;
+            invalid_special = true;
         else if (x == 0 && y == 0)
-            invalid_coords = true;
-        else if (x < x_min || x > x_max || y < y_min || y > y_max)
-            invalid_coords = true;
+            invalid_special = true;
 
-        if (!invalid_coords) {
-            guncon2->last_x = x;
-            guncon2->last_y = y;
-            guncon2->have_last_pos = true;
-        }
-
-
-        /*
-         * Hysteresis without BTN_EXTRA:
-         * - For a few consecutive invalid packets, keep reporting the last known good position.
-         * - After OFFSCREEN_HYST_FRAMES invalid packets in a row, smoothly drift back to center.
-         */
-        if (invalid_coords) {
-            if (guncon2->invalid_frames < 0xFF)
-                guncon2->invalid_frames++;
-        } else {
-            guncon2->invalid_frames = 0;
-        }
-
-        if (!invalid_coords) {
-            /* Current packet is valid -> use it */
-            aim_x = x;
-            aim_y = y;
-        } else if (guncon2->have_last_pos &&
-                   guncon2->invalid_frames < OFFSCREEN_HYST_FRAMES) {
-            /* Brief tracking drop -> stick to last good */
-            aim_x = guncon2->last_x;
-            aim_y = guncon2->last_y;
-        } else {
-            /* Prolonged tracking loss -> decay toward center */
-            guncon2->last_report_x -= (guncon2->last_report_x >> CENTER_DECAY_SHIFT);
-            guncon2->last_report_y -= (guncon2->last_report_y >> CENTER_DECAY_SHIFT);
-            input_report_abs(guncon2->input_device, ABS_X, guncon2->last_report_x);
-            input_report_abs(guncon2->input_device, ABS_Y, guncon2->last_report_y);
-            goto sync_and_exit;
-        }
 
         // psakhis: apply normalized values
         rx = x_max - x_min;
-        if (!guncon2->have_last_pos || rx == 0 || aim_x < x_min || aim_x > x_max) {
-            /* No valid position yet (or invalid range) -> report centered */
-            guncon2->last_report_x = 0;
-            input_report_abs(guncon2->input_device, ABS_X, guncon2->last_report_x);
+        if (invalid_special || x < x_min || x > x_max || rx == 0) {
+            input_report_abs(guncon2->input_device, ABS_X, OFFSCREEN);
         } else {
-            nx = (aim_x - x_min) << 16;
-            do_div(nx, rx);
-            guncon2->last_report_x = (int)nx - CENTER;
-            input_report_abs(guncon2->input_device, ABS_X, guncon2->last_report_x);
-        }
-        ry = y_max - y_min;
-        if (!guncon2->have_last_pos || ry == 0 || aim_y < y_min || aim_y > y_max) {
-            guncon2->last_report_y = 0;
-            input_report_abs(guncon2->input_device, ABS_Y, guncon2->last_report_y);
+            nx = (x - x_min) << 16;            
+            do_div(nx, rx);              
+            input_report_abs(guncon2->input_device, ABS_X, nx - CENTER);
+        } 
+         ry = y_max - y_min;
+        if (invalid_special || y < y_min || y > y_max || ry == 0) {
+            input_report_abs(guncon2->input_device, ABS_Y, OFFSCREEN);
         } else {
-            ny = (aim_y - y_min) << 16;
-            do_div(ny, ry);
-            guncon2->last_report_y = (int)ny - CENTER;
-            input_report_abs(guncon2->input_device, ABS_Y, guncon2->last_report_y);
-        }
+            ny = (y - y_min) << 16;
+            do_div(ny, ry);                
+            input_report_abs(guncon2->input_device, ABS_Y, ny - CENTER);            
+        } 
         // end psakhis
 
-sync_and_exit:
         input_sync(guncon2->input_device);
     }
 
@@ -309,10 +257,6 @@ static int guncon2_open(struct input_dev *input) {
     }
     
     guncon2->is_recalibrate = false;
-    guncon2->have_last_pos = false;
-    guncon2->invalid_frames = 0;
-    guncon2->last_report_x = 0;
-    guncon2->last_report_y = 0;
     guncon2->is_open = true;
     
 out:
@@ -326,10 +270,6 @@ static void guncon2_close(struct input_dev *input) {
     usb_kill_urb(guncon2->urb);
     guncon2->is_open = false;
     guncon2->is_recalibrate = false;
-    guncon2->have_last_pos = false;
-    guncon2->invalid_frames = 0;
-    guncon2->last_report_x = 0;
-    guncon2->last_report_y = 0;
     mutex_unlock(&guncon2->pm_mutex);
 }
 
@@ -367,10 +307,6 @@ static int guncon2_probe(struct usb_interface *intf,
     mutex_init(&guncon2->pm_mutex);
     guncon2->intf = intf;
     guncon2->is_recalibrate = false;   
-    guncon2->have_last_pos = false;
-    guncon2->invalid_frames = 0;
-    guncon2->last_report_x = 0;
-    guncon2->last_report_y = 0;
 
     usb_set_intfdata(guncon2->intf, guncon2);
 
