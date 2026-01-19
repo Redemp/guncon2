@@ -46,8 +46,8 @@
 #define OFFSCREEN -65536 
 #define CENTER 32768
 
-#define OFFSCREEN_HYST_FRAMES 8
-#define CENTER_DECAY_SHIFT 2  /* after hysteresis, move 1/(2^shift) toward center each report */
+#define OFFSCREEN_HYST_FRAMES 3
+/* Offscreen hysteresis: number of consecutive invalid packets to tolerate before forcing OFFSCREEN. */
 
 
 struct guncon2 {
@@ -217,13 +217,24 @@ static void guncon2_usb_irq(struct urb *urb) {
         /*
          * Hysteresis without BTN_EXTRA:
          * - For a few consecutive invalid packets, keep reporting the last known good position.
-         * - After OFFSCREEN_HYST_FRAMES invalid packets in a row, report OFFSCREEN
+         * - After OFFSCREEN_HYST_FRAMES invalid packets in a row, report OFFSCREEN.
          */
         if (invalid_coords) {
             if (guncon2->invalid_frames < 0xFF)
                 guncon2->invalid_frames++;
         } else {
             guncon2->invalid_frames = 0;
+        }
+
+        /*
+         * Trigger override (Batocera offscreen reload):
+         * If tracking is invalid AND trigger is pressed, force OFFSCREEN immediately.
+         * This keeps reload responsive even within the hysteresis window.
+         */
+        if (invalid_coords && (buttons & GUNCON2_TRIGGER)) {
+            input_report_abs(guncon2->input_device, ABS_X, OFFSCREEN);
+            input_report_abs(guncon2->input_device, ABS_Y, OFFSCREEN);
+            goto sync_and_exit;
         }
 
         if (!invalid_coords) {
@@ -237,8 +248,6 @@ static void guncon2_usb_irq(struct urb *urb) {
             aim_y = guncon2->last_y;
         } else {
             /* Prolonged tracking loss -> OFFSCREEN */
-            guncon2->last_report_x -= (guncon2->last_report_x >> CENTER_DECAY_SHIFT);
-            guncon2->last_report_y -= (guncon2->last_report_y >> CENTER_DECAY_SHIFT);
             input_report_abs(guncon2->input_device, ABS_X, OFFSCREEN);
             input_report_abs(guncon2->input_device, ABS_Y, OFFSCREEN);
             goto sync_and_exit;
